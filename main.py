@@ -3,6 +3,7 @@ import json
 from dotenv import load_dotenv
 from openai import OpenAI
 import gradio as gr
+import sqlite3
 
 load_dotenv(override=True)
 
@@ -22,13 +23,30 @@ Give short, courteous answers, no more than 1 sentence.
 Always be accurate. If you don't know the answer, say so.
 """
 
-ticket_prices = {"london": "$799", "paris": "$899", "tokyo": "$1400", "berlin": "$499"}
+DB = "prices.db"
 
-def get_ticket_price(destination_city):
-    print(f"Tool called for city {destination_city}")
-    price = ticket_prices.get(destination_city.lower(), "Unknown ticket price")
-    return f"The price of a ticket to {destination_city} is {price}"
+with sqlite3.connect(DB) as conn:
+    cursor = conn.cursor()
+    cursor.execute('CREATE TABLE IF NOT EXISTS prices (city TEXT PRIMARY KEY, price REAL)')
+    conn.commit()
 
+def set_ticket_price(city, price):
+    with sqlite3.connect(DB) as conn:
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO prices (city, price) VALUES (?, ?) ON CONFLICT(city) DO UPDATE SET price = ?', (city.lower(), price, price))
+        conn.commit()
+
+ticket_prices = {"london":799, "paris": 899, "tokyo": 1420, "sydney": 2999}
+for city, price in ticket_prices.items():
+    set_ticket_price(city, price)
+
+def get_ticket_price(city):
+    print(f"DATABASE TOOL CALLED: Getting price for {city}", flush=True)
+    with sqlite3.connect(DB) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT price FROM prices WHERE city = ?', (city.lower(),))
+        result = cursor.fetchone()
+        return f"Ticket price to {city} is ${result[0]}" if result else "No price data available for this city"
 
 price_function = {
     "name": "get_ticket_price",
@@ -76,7 +94,5 @@ def chat(message, history):
     
     return response.choices[0].message.content
 
-gr.ChatInterface(fn=chat).launch()
-
 if __name__ == "__main__":
-    pass
+    gr.ChatInterface(fn=chat).launch()
