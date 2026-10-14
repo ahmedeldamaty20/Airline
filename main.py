@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import gradio as gr
 import sqlite3
+import base64
+from io import BytesIO
+from PIL import Image
 
 load_dotenv(override=True)
 
@@ -66,33 +69,84 @@ price_function = {
 
 tools = [{"type": "function", "function": price_function}]
 
-def handle_tool_calls(message):
+def handle_tool_calls_and_return_cities(message):
     responses = []
+    cities = []
     for tool_call in message.tool_calls:
         if tool_call.function.name == "get_ticket_price":
             arguments = json.loads(tool_call.function.arguments)
             city = arguments.get('destination_city')
+            cities.append(city)
             price_details = get_ticket_price(city)
             responses.append({
                 "role": "tool",
                 "content": price_details,
                 "tool_call_id": tool_call.id
             })
-    return responses
+    return responses, cities
 
-def chat(message, history):
+def artist(city):
+    image_response = openai.images.generate(
+        model="gpt-image-1-mini",
+        prompt=f"An image representing a vacation in {city}, showing tourist spots and everything unique about {city}, in a vibrant pop-art style",
+        size="1024x1024",
+        n=1,
+    )
+    image_base64 = image_response.data[0].b64_json # type: ignore
+    image_data = base64.b64decode(image_base64) # type: ignore
+    return Image.open(BytesIO(image_data))
+
+def talker(message):
+    response = openai.audio.speech.create(
+      model="gpt-4o-mini-tts",
+      voice="onyx",    # Also, try replacing onyx with alloy or coral
+      input=message
+    )
+    return response.content
+
+def chat(history):
     history = [{"role":h["role"], "content":h["content"]} for h in history]
-    messages =  [{"role": "system", "content": system_message}] + history + [{"role": "user", "content": message}]
+    messages =  [{"role": "system", "content": system_message}] + history
     response = openai.chat.completions.create(model=MODEL, messages=messages, tools=tools) # type: ignore
+
+    cities = []
+    image = None
+
+    print(f"RESPONSE: {response.choices[0].message}", flush=True)
 
     while response.choices[0].finish_reason=="tool_calls":
         message = response.choices[0].message
-        responses = handle_tool_calls(message)
+        responses, cities = handle_tool_calls_and_return_cities(message)
         messages.append(message) # type: ignore
         messages.extend(responses)
         response = openai.chat.completions.create(model=MODEL, messages=messages, tools=tools) # type: ignore
+        print(f"RESPONSE: {response.choices[0].message}", flush=True)
     
-    return response.choices[0].message.content
+    reply = response.choices[0].message.content
+    history += [{"role":"assistant", "content":reply}]
+
+    voice = talker(reply)
+
+    if cities:
+        image = artist(cities[0])
+    
+    return history, voice, image
+
+def put_message_in_chatbot(message, history):
+        return "", history + [{"role":"user", "content":message}]
 
 if __name__ == "__main__":
-    gr.ChatInterface(fn=chat).launch()
+    with gr.Blocks() as ui:
+        with gr.Row():
+            chatbot = gr.Chatbot(height=500)
+            image_output = gr.Image(height=500, interactive=False)
+        with gr.Row():
+            audio_output = gr.Audio(autoplay=True)
+        with gr.Row():
+            message = gr.Textbox(label="Chat with our AI Assistant:")
+
+        message.submit(put_message_in_chatbot, inputs=[message, chatbot], outputs=[message, chatbot]).then(
+            chat, inputs=chatbot, outputs=[chatbot, audio_output, image_output]
+        )
+
+    ui.launch(inbrowser=True, auth=("ahmed", "ahmed_pass"))
